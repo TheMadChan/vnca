@@ -5,14 +5,15 @@ from torch.utils.checkpoint import checkpoint
 
 class MitosisNCA(t.nn.Module):
 
-    def __init__(self, h, w, state_dim, update_net: t.nn.Module, n_duplications, steps_per_duplication, p_update=0.5):
+    def __init__(self, h, w, state_dim, update_net: t.nn.Module, n_duplications, steps_per_duplication, p_update=0.5, device="cuda"):
         super().__init__()
         self.h = h
         self.w = w
         self.n_duplications = n_duplications
         self.steps_per_duplication = steps_per_duplication
         self.state_dim = state_dim
-        self.device = "cuda" if t.cuda.is_available() else "cpu"
+        self.device = device
+        # self.device = "cuda" if t.cuda.is_available() else "cpu"
         self.update_net = update_net
         self.p_update = p_update
 

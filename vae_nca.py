@@ -1,5 +1,6 @@
 import os
 from typing import Sequence, Tuple
+import argparse
 
 import numpy as np
 import torch as t
@@ -9,11 +10,16 @@ from shapeguard import ShapeGuard
 from torch import nn, optim
 from torch.distributions import Normal, Distribution, kl_divergence, Bernoulli
 from torch.utils.data import DataLoader, ConcatDataset
+from distutils_fallback import LooseVersion
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.tensorboard._utils import make_grid
+import torchvision.utils as vutils
 import tqdm
+import torchvision.transforms as transforms
+
 
 from data.mnist import StaticMNIST
+from data.fractures import FractureImages
 from iterable_dataset_wrapper import IterableWrapper
 from modules.model import Model
 from modules.nca import MitosisNCA
@@ -25,19 +31,23 @@ from util import get_writers
 # torch.autograd.set_detect_anomaly(True)
 
 class VAENCA(Model, nn.Module):
-    def __init__(self):
+    def __init__(self, ds = 'fractures', n_updates = 1000, batch_size=32, test_batch_size = 32, z_size=128, bin_threshold=0.75, learning_rate=1e-4):
         super(Model, self).__init__()
         self.h = self.w = 32
-        self.z_size = 256
+        self.z_size = z_size
         self.train_loss_fn = self.elbo_loss_function
         self.train_samples = 1
         self.test_loss_fn = self.iwae_loss_fn
         self.test_samples = 1
-        self.nca_hid = 256
+        self.nca_hid = z_size
         self.encoder_hid = 32
-        batch_size = 32
+        # batch_size = batch_size
+        # test_batch_size = test_batch_size
         self.bpd_dimensions = 1 * 28 * 28
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        # self.device = "cpu"
+        # self.device = "cpu" if ds == "mnist" else "cuda" if torch.cuda.is_available() else "cpu"
+
 
         filter_size = (5, 5)
         pad = tuple(s // 2 for s in filter_size)
@@ -78,23 +88,40 @@ class VAENCA(Model, nn.Module):
         update_net[-1].weight.data.fill_(0.0)
         update_net[-1].bias.data.fill_(0.0)
 
-        self.nca = MitosisNCA(self.h, self.w, self.z_size, update_net, int(np.log2(self.h)) - 1, 8, 1.0)
+        self.nca = MitosisNCA(self.h, self.w, self.z_size, update_net, int(np.log2(self.h)) - 1, 8, 1.0, device=self.device)
         self.p_z = Normal(t.zeros(self.z_size, device=self.device), t.ones(self.z_size, device=self.device))
 
-        data_dir = os.environ.get('DATA_DIR') or "."
-        train_data, val_data = StaticMNIST(data_dir, 'train'), StaticMNIST(data_dir, 'val'),
+        if ds == 'mnist':
+            # self.device = "cpu"
+            data_dir = os.environ.get('DATA_DIR') or "."
+            train_data, val_data = StaticMNIST(data_dir, 'train'), StaticMNIST(data_dir, 'val'),
+            self.test_set = StaticMNIST(data_dir, 'test')
+        else:
+            # Define transformations
+            transform = transforms.Compose([
+                transforms.Resize((32, 32)),  # Resize to 32x32 if needed
+                transforms.ToTensor(),        # Convert to tensor
+                transforms.Lambda(lambda x: (x > bin_threshold).float())  # Binarize the image
+                ])
+            
+            data_dir = "D:\OneDrive - ETH Zurich\SciML\Chan_SciML\glass_fractures"
+            train_data, val_data = FractureImages(data_dir, 'train', transform=transform), FractureImages(data_dir, 'validation', transform=transform),
+            self.test_set = FractureImages(data_dir, 'test', transform=transform)
+            # self.test_set.save_images_as_grid(r'D:\OneDrive - ETH Zurich\SciML\Chan_SciML\vnca\data\ground_truth.png')
+
+
         train_data = ConcatDataset((train_data, val_data))
-        self.test_set = StaticMNIST(data_dir, 'test')
+
         self.train_loader = iter(DataLoader(IterableWrapper(train_data), batch_size=batch_size, pin_memory=True))
-        self.test_loader = iter(DataLoader(IterableWrapper(self.test_set), batch_size=batch_size, pin_memory=True))
-        self.train_writer, self.test_writer = get_writers("hierarchical-nca")
+        self.test_loader = iter(DataLoader(IterableWrapper(self.test_set), batch_size=test_batch_size, shuffle=False, pin_memory=True))
+        self.train_writer, self.test_writer = get_writers("hierarchical-nca", ds, n_updates, batch_size, test_batch_size, z_size, bin_threshold, learning_rate)
 
         print(self)
         for n, p in self.named_parameters():
             print(n, p.shape)
 
         self.to(self.device)
-        self.optimizer = optim.Adam(self.parameters(), lr=1e-4)
+        self.optimizer = optim.Adam(self.parameters(), lr=learning_rate)
         self.batch_idx = 0
 
     def train_batch(self):
@@ -131,7 +158,8 @@ class VAENCA(Model, nn.Module):
     def eval_batch(self):
         self.train(False)
         with t.no_grad():
-            x, y = next(self.test_loader)
+            # x, y = next(self.test_loader)
+            x = self.test_set.samples
             loss, z, p_x_given_z, recon_loss, kl_loss = self.forward(x, self.test_samples, self.test_loss_fn)
             self.report(self.test_writer, p_x_given_z, loss, recon_loss, kl_loss)
         return loss.item()
@@ -140,7 +168,8 @@ class VAENCA(Model, nn.Module):
         self.train(False)
         with t.no_grad():
             total_loss = 0.0
-            for x, y in tqdm.tqdm(self.test_set.samples):
+            for x in tqdm.tqdm(self.test_set.samples):
+                x = x.unsqueeze(0)
                 loss, z, p_x_given_z, recon_loss, kl_loss = self.forward(x, n_iw_samples, self.test_loss_fn)
                 total_loss += loss
 
@@ -165,11 +194,13 @@ class VAENCA(Model, nn.Module):
                 growth.append(rgb)
             growth = t.cat(growth, dim=0).cpu().detach().numpy()  # (n_states, 3, h, w)
 
-            x, y = next(self.test_loader)
+            # x, y = next(self.test_loader)
+            x = self.test_set.samples
+            ground_truth = x[:64]
             _, _, p_x_given_z, _, _ = self.forward(x[:64], 1, self.iwae_loss_fn)
             recons = self.to_rgb(p_x_given_z.logits.reshape(-1, 1, self.h, self.w))
 
-        return samples, recons, growth
+        return samples, recons, growth, ground_truth
 
     def to_rgb(self, samples):
         return Bernoulli(logits=samples[:, :1, :, :]).sample()
@@ -196,10 +227,19 @@ class VAENCA(Model, nn.Module):
         if kl_loss:
             writer.add_scalar('kl_loss', kl_loss.item(), self.batch_idx)
 
-        samples, recons, growth = self._plot_samples()
+        samples, recons, growth, ground_truth = self._plot_samples()
+        
+        # Add padding to the samples tensor
+        padding = 1  # Amount of padding to add to each side
+        samples = torch.nn.functional.pad(samples, (padding, padding, padding, padding), mode='constant', value=0)
+        recons = torch.nn.functional.pad(recons, (padding, padding, padding, padding), mode='constant', value=0)
+        # growth = torch.nn.functional.pad(growth, (padding, padding, padding, padding), mode='constant', value=0)
+        ground_truth = torch.nn.functional.pad(ground_truth, (padding, padding, padding, padding), mode='constant', value=0)
+
         # writer.add_images("grid", grid, self.batch_idx)
         writer.add_images("samples", samples, self.batch_idx)
         writer.add_images("recons", recons, self.batch_idx)
+        writer.add_images("ground_truth", ground_truth, self.batch_idx)
         writer.add_images("growth", growth, self.batch_idx)
 
     def encode(self, x) -> Distribution:  # q(z|x)
@@ -210,6 +250,7 @@ class VAENCA(Model, nn.Module):
         return Normal(loc=loc, scale=t.exp(logsigma))
 
     def decode(self, z: t.Tensor) -> Tuple[Distribution, Sequence[t.Tensor]]:  # p(x|z)
+        z = z.to(self.device)
         z.sg("Bnz")
         bs, ns, zs = z.shape
         state = z.reshape((-1, self.z_size)).unsqueeze(2).unsqueeze(3).expand(-1, -1, 2, 2).sg("bz22")
@@ -226,7 +267,7 @@ class VAENCA(Model, nn.Module):
         x.sg("B4hw")
         x = x.to(self.device)
         x_flat = x.reshape(x.shape[0], -1).sg("Bx")
-        q_z_given_x = self.encode(x).sg("Bz")
+        q_z_given_x: Distribution = self.encode(x).sg("Bz")
         z = q_z_given_x.rsample((n_samples,)).permute((1, 0, 2)).sg("Bnz")
         decode, _ = self.decode(z)
         p_x_given_z = decode.sg("Bnx")
@@ -266,10 +307,33 @@ class VAENCA(Model, nn.Module):
         kl_loss = kld.mean()
         loss = reconstruction_loss + kl_loss
         return loss, reconstruction_loss, kl_loss  # (1,)
+    
+    def generate_samples(self, n_samples):
+        self.eval()
+        with torch.no_grad():
+            z = self.p_z.sample((n_samples, self.z_size)).to(self.device)  # Ensure sample_shape is correct
+            # z = z.unsqueeze(1)  # Add a dimension to match the expected shape (batch_size, n_samples, z_size)
+            decode, _ = self.decode(z)
+            samples = decode.sample()  # Sample from the Bernoulli distribution
+        return samples
 
 
 if __name__ == "__main__":
-    model = VAENCA()
+
+    parser = argparse.ArgumentParser(description='VAE-NCA Training')
+    parser.add_argument('--batch_size', type=int, default=32, help='Batch size for training')
+    parser.add_argument('--z_size', type=int, default=128, help='Size of latent space')
+    parser.add_argument('--bin_threshold', type=float, default=0.75, help='Threshold for binarizing the image')
+    parser.add_argument('--learning_rate', type=float, default=1e-4, help='Learning rate for the optimizer')
+    parser.add_argument('--n_updates', type=int, default=1000, help='Number of updates to train the model')
+    parser.add_argument('--test_batch_size', type=int, default=27, help='Batch size for testing')
+    parser.add_argument('--dataset', type=str, default='fractures', help='Glass fractures or MNIST dataset')
+    args = parser.parse_args()
+
+    model = VAENCA(ds=args.dataset, n_updates=args.n_updates, batch_size=args.batch_size, test_batch_size = args.test_batch_size, z_size=args.z_size, bin_threshold=args.bin_threshold, learning_rate=args.learning_rate)
     model.eval_batch()
-    train(model, n_updates=100_000, eval_interval=100)
-    model.test(128)
+    train(model, n_updates=args.n_updates, eval_interval=100)
+    model.test(32)
+
+    samples = model.generate_samples(10)
+    print(samples)

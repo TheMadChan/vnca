@@ -6,3 +6,8 @@ MNIST
 KMNIST
 cifar-10-batches-py
 celeba
+tmp/
+latest
+best
+*.egg-info
+mnist-static
