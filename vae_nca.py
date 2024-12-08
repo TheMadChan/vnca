@@ -20,6 +20,7 @@ import torchvision.transforms as transforms
 
 from data.mnist import StaticMNIST
 from data.fractures import FractureImages
+from data.augmentation import augment_dataset, rotation_transforms, flip_transforms
 from iterable_dataset_wrapper import IterableWrapper
 from modules.model import Model
 from modules.nca import MitosisNCA
@@ -31,7 +32,7 @@ from util import get_writers
 # torch.autograd.set_detect_anomaly(True)
 
 class VAENCA(Model, nn.Module):
-    def __init__(self, ds = 'fractures', n_updates = 1000, batch_size=32, test_batch_size = 32, z_size=128, bin_threshold=0.75, learning_rate=1e-4):
+    def __init__(self, ds = 'fractures', n_updates = 100, batch_size=32, test_batch_size = 32, z_size=128, bin_threshold=0.75, learning_rate=1e-4, beta=1.0, augment=False):  
         super(Model, self).__init__()
         self.h = self.w = 32
         self.z_size = z_size
@@ -41,9 +42,14 @@ class VAENCA(Model, nn.Module):
         self.test_samples = 1
         self.nca_hid = z_size
         self.encoder_hid = 32
-        # batch_size = batch_size
-        # test_batch_size = test_batch_size
-        self.bpd_dimensions = 1 * 28 * 28
+        self.beta = beta
+        self.batch_size = batch_size
+        self.test_batch_size = test_batch_size
+        self.bin_threshold = bin_threshold
+        self.augment = augment
+        self.learning_rate = learning_rate
+        self.n_updates = n_updates
+        self.bpd_dimensions = 1 * 32 * 32
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         # self.device = "cpu"
         # self.device = "cpu" if ds == "mnist" else "cuda" if torch.cuda.is_available() else "cpu"
@@ -98,23 +104,29 @@ class VAENCA(Model, nn.Module):
             self.test_set = StaticMNIST(data_dir, 'test')
         else:
             # Define transformations
-            transform = transforms.Compose([
+            self.transform = transforms.Compose([
                 transforms.Resize((32, 32)),  # Resize to 32x32 if needed
                 transforms.ToTensor(),        # Convert to tensor
                 transforms.Lambda(lambda x: (x > bin_threshold).float())  # Binarize the image
                 ])
             
-            data_dir = "D:\OneDrive - ETH Zurich\SciML\Chan_SciML\glass_fractures"
-            train_data, val_data = FractureImages(data_dir, 'train', transform=transform), FractureImages(data_dir, 'validation', transform=transform),
-            self.test_set = FractureImages(data_dir, 'test', transform=transform)
-            # self.test_set.save_images_as_grid(r'D:\OneDrive - ETH Zurich\SciML\Chan_SciML\vnca\data\ground_truth.png')
+            data_dir = "../glass_fractures"
+            train_data, val_data = FractureImages(data_dir, 'train', transform=self.transform), FractureImages(data_dir, 'validation', transform=self.transform),
+            self.test_set = FractureImages(data_dir, 'test', transform=self.transform)
+            
+            if augment:
+                # Augment the dataset
+                train_augmented = augment_dataset(train_data, rotation_transforms, flip_transforms)
+                val_augmented = augment_dataset(val_data, rotation_transforms, flip_transforms)
 
+                train_data = ConcatDataset((train_data, train_augmented))
+                val_data = ConcatDataset((val_data, val_augmented))
 
         train_data = ConcatDataset((train_data, val_data))
 
         self.train_loader = iter(DataLoader(IterableWrapper(train_data), batch_size=batch_size, pin_memory=True))
         self.test_loader = iter(DataLoader(IterableWrapper(self.test_set), batch_size=test_batch_size, shuffle=False, pin_memory=True))
-        self.train_writer, self.test_writer = get_writers("hierarchical-nca", ds, n_updates, batch_size, test_batch_size, z_size, bin_threshold, learning_rate)
+        self.train_writer, self.test_writer = get_writers("hierarchical-nca", ds, n_updates, batch_size, test_batch_size, z_size, bin_threshold, learning_rate, self.beta)
 
         print(self)
         for n, p in self.named_parameters():
@@ -173,7 +185,7 @@ class VAENCA(Model, nn.Module):
                 loss, z, p_x_given_z, recon_loss, kl_loss = self.forward(x, n_iw_samples, self.test_loss_fn)
                 total_loss += loss
 
-        print(total_loss / len(self.test_set))
+        print(f"total iwae-loss is -{total_loss / len(self.test_set)}nats")
 
     def _plot_samples(self):
         ShapeGuard.reset()
@@ -258,7 +270,8 @@ class VAENCA(Model, nn.Module):
 
         state = states[-1]
 
-        logits = state[:, :1, :, :].sg("b1hw").reshape((bs, ns, -1)).sg("Bnx")
+        # logits = state[:, :1, :, :].sg("b1hw").reshape((bs, ns, -1)).sg("Bnx")
+        logits = state[:, :1, :, :].reshape((bs, ns, -1)).sg("Bnx")
 
         return Bernoulli(logits=logits), states
 
@@ -305,17 +318,25 @@ class VAENCA(Model, nn.Module):
 
         reconstruction_loss = -logpx_given_z.mean()
         kl_loss = kld.mean()
-        loss = reconstruction_loss + kl_loss
+        loss = reconstruction_loss + self.beta*kl_loss
         return loss, reconstruction_loss, kl_loss  # (1,)
     
-    def generate_samples(self, n_samples):
+    def generate_fracture(self, image: t.Tensor, target_image_size: int) -> t.Tensor:
         self.eval()
         with torch.no_grad():
-            z = self.p_z.sample((n_samples, self.z_size)).to(self.device)  # Ensure sample_shape is correct
-            # z = z.unsqueeze(1)  # Add a dimension to match the expected shape (batch_size, n_samples, z_size)
+
+            transform = self.transform
+            image = transform(image)  # Convert to tensor and add batch dimension
+            image = image.to(self.device)
+
+            z = self.encode(image.unsqueeze(0)).rsample((1,)).permute((1, 0, 2)).sg("Bnz")
+
+            self.nca.n_duplications = int(np.log2(target_image_size)) - 1
             decode, _ = self.decode(z)
-            samples = decode.sample()  # Sample from the Bernoulli distribution
-        return samples
+
+            output_image = decode.sample().reshape(1, target_image_size, target_image_size)  # Sample from the Bernoulli distribution
+
+        return output_image
 
 
 if __name__ == "__main__":
@@ -325,15 +346,26 @@ if __name__ == "__main__":
     parser.add_argument('--z_size', type=int, default=128, help='Size of latent space')
     parser.add_argument('--bin_threshold', type=float, default=0.75, help='Threshold for binarizing the image')
     parser.add_argument('--learning_rate', type=float, default=1e-4, help='Learning rate for the optimizer')
-    parser.add_argument('--n_updates', type=int, default=1000, help='Number of updates to train the model')
-    parser.add_argument('--test_batch_size', type=int, default=27, help='Batch size for testing')
+    parser.add_argument('--n_updates', type=int, default=100, help='Number of updates to train the model')
+    parser.add_argument('--test_batch_size', type=int, default=32, help='Batch size for testing')
     parser.add_argument('--dataset', type=str, default='fractures', help='Glass fractures or MNIST dataset')
+    parser.add_argument('--beta', type=float, default=1.0, help='Weight for the KL divergence term')
+    parser.add_argument('--augment', type=bool, default=False, help='Augment dataset or not')
     args = parser.parse_args()
 
-    model = VAENCA(ds=args.dataset, n_updates=args.n_updates, batch_size=args.batch_size, test_batch_size = args.test_batch_size, z_size=args.z_size, bin_threshold=args.bin_threshold, learning_rate=args.learning_rate)
+    model = VAENCA(ds=args.dataset, 
+                   n_updates=args.n_updates, 
+                   batch_size=args.batch_size, 
+                   test_batch_size = args.test_batch_size, 
+                   z_size=args.z_size, 
+                   bin_threshold=args.bin_threshold, 
+                   learning_rate=args.learning_rate,
+                   beta=args.beta,
+                   augment=args.augment)
+    
     model.eval_batch()
+    
     train(model, n_updates=args.n_updates, eval_interval=100)
-    model.test(32)
+    
+    model.test(128)
 
-    samples = model.generate_samples(10)
-    print(samples)

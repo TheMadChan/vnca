@@ -40,9 +40,3 @@ class FractureImages(Dataset):
     def __getitem__(self, idx):
         return self.samples[idx], 0  # placeholder label
     
-    def save_images_as_grid(self, save_path):
-        # Create a grid of images
-        grid = vutils.make_grid(self.samples, nrow=8, padding=0, normalize=True)
-        grid_image = transforms.ToPILImage()(grid)
-        grid_image.save(save_path)
-

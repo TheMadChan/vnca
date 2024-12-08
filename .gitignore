@@ -11,3 +11,6 @@ latest
 best
 *.egg-info
 mnist-static
+models/
+generated_fractures/
+
