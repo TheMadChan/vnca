@@ -27,6 +27,9 @@ from modules.nca import MitosisNCA
 from modules.residual import Residual
 from train import train
 from util import get_writers
+from sklearn.manifold import TSNE
+from sklearn.cluster import KMeans
+import matplotlib.pyplot as plt
 
 
 # torch.autograd.set_detect_anomaly(True)
@@ -125,8 +128,9 @@ class VAENCA(Model, nn.Module):
         train_data = ConcatDataset((train_data, val_data))
 
         self.train_loader = iter(DataLoader(IterableWrapper(train_data), batch_size=batch_size, pin_memory=True))
+        self.latent_loader = iter(DataLoader(IterableWrapper(train_data), batch_size=1, pin_memory=True))
         self.test_loader = iter(DataLoader(IterableWrapper(self.test_set), batch_size=test_batch_size, shuffle=False, pin_memory=True))
-        self.train_writer, self.test_writer = get_writers("hierarchical-nca", ds, n_updates, batch_size, test_batch_size, z_size, bin_threshold, learning_rate, self.beta)
+        self.train_writer, self.test_writer = get_writers("hierarchical-nca", ds, n_updates, batch_size, test_batch_size, z_size, bin_threshold, learning_rate, self.beta, self.augment)
 
         print(self)
         for n, p in self.named_parameters():
@@ -185,12 +189,18 @@ class VAENCA(Model, nn.Module):
                 loss, z, p_x_given_z, recon_loss, kl_loss = self.forward(x, n_iw_samples, self.test_loss_fn)
                 total_loss += loss
 
-        print(f"total iwae-loss is -{total_loss / len(self.test_set)}nats")
+        print(f"total iwae-loss is -{total_loss / len(self.test_set)} nats")
 
     def _plot_samples(self):
         ShapeGuard.reset()
         with torch.no_grad():
-            samples = self.p_z.sample((64, 1)).to(self.device)
+            x = self.test_set.samples[0].unsqueeze(0).to(self.device)
+            q_z_given_x = self.encode(x)
+            q_z_given_x = Normal(loc=q_z_given_x.loc.squeeze(0), scale=q_z_given_x.scale.squeeze(0))
+            
+            ShapeGuard.reset()
+            samples = q_z_given_x.sample((64, 1)).to(self.device)
+            
             decode, states = self.decode(samples)
             samples = self.to_rgb(states[-1])
             # rgb=0.3, alpha=0 --> samples = 1-0+0.3*0 = 1 = white
@@ -205,11 +215,11 @@ class VAENCA(Model, nn.Module):
                 rgb = t.nn.functional.pad(rgb, [pad] * 4, mode="constant", value=0)
                 growth.append(rgb)
             growth = t.cat(growth, dim=0).cpu().detach().numpy()  # (n_states, 3, h, w)
-
+            
             # x, y = next(self.test_loader)
-            x = self.test_set.samples
-            ground_truth = x[:64]
-            _, _, p_x_given_z, _, _ = self.forward(x[:64], 1, self.iwae_loss_fn)
+            x1 = self.test_set.samples
+            ground_truth = x1[:64]
+            _, _, p_x_given_z, _, _ = self.forward(x1[:64], 1, self.iwae_loss_fn)
             recons = self.to_rgb(p_x_given_z.logits.reshape(-1, 1, self.h, self.w))
 
         return samples, recons, growth, ground_truth
@@ -217,18 +227,50 @@ class VAENCA(Model, nn.Module):
     def to_rgb(self, samples):
         return Bernoulli(logits=samples[:, :1, :, :]).sample()
 
-    def plot_growth_samples(self):
-        ShapeGuard.reset()
-        with torch.no_grad():
-            samples = self.p_z.sample((64, 1)).to(self.device)
-            _, states = self.decode(samples)
-            for i, state in enumerate(states):
-                samples = t.clip(state[:, :4, :, :], 0, 1).cpu().detach().numpy()
-                samples = self.to_rgb(samples)
-                samples = (samples * 255).astype(np.uint8)
-                grid = make_grid(samples).transpose(1, 2, 0)  # (HWC)
-                im = Image.fromarray(grid)
-                im.save("samples-%03d.png" % i)
+    # def plot_growth_sample_avg(self, image_dir="../glass_fractures/test", index=0, model_name="latest", save_dir="growth-samples"):
+    #     ShapeGuard.reset()
+    #     with torch.no_grad():
+    #         image_files = [f for f in os.listdir(image_dir) if f.endswith(('.png', '.jpg', '.jpeg'))]
+    #         image_name = image_files[index].split('.')[0]
+    #         image_path = os.path.join(image_dir, image_files[index])
+    #         image = Image.open(image_path).convert('L')  # Convert to grayscale
+            
+    #         transform = self.transform
+    #         image = transform(image)  # Convert to tensor and add batch dimension
+    #         image = image.to(self.device)
+
+    #         p_z = self.encode(image.unsqueeze(0))
+    #         p_z = Normal(loc=p_z.loc.squeeze(0), scale=p_z.scale.squeeze(0))
+
+    #         ShapeGuard.reset()
+
+    #         samples = self.p_z.sample((64, 1)).to(self.device)
+    #         decode, states = self.decode(samples)
+
+    #         # Create a new directory inside save_dir
+    #         growth_images_dir = os.path.join(save_dir, f"{model_name}_growth_images")
+    #         os.makedirs(growth_images_dir, exist_ok=True)
+
+    #         all_state_images = []
+    #         for i, state in enumerate(states):
+    #             avg_state = state.mean(dim=0, keepdim=True)
+    #             # avg_state = self.to_rgb(avg_state)
+    #             avg_state = avg_state[:, :1, :, :]
+    #             h = avg_state.shape[3]
+    #             pad = (self.h - h) // 2
+    #             avg_state = t.nn.functional.pad(avg_state, [pad] * 4, mode="constant", value=0)
+    #             all_state_images.append(avg_state)
+
+    #             avg_state_np = avg_state.cpu().detach().numpy()
+    #             avg_state_np = (avg_state_np * 255).astype(np.uint8)
+    #             avg_state_np = avg_state_np.transpose(1, 2, 0)  # (HWC)
+    #             im = Image.fromarray(avg_state_np)
+    #             im.save(os.path.join(growth_images_dir,"avg-samples-%03d.png" % i))
+
+    #         all_state_images_np = t.cat(all_state_images, dim=0).permute(1, 2, 0).cpu().numpy()  # (HWC)
+    #         all_grid = make_grid(all_state_images_np, nrow=8, padding=2, normalize=False)  # (HWC)
+    #         im = Image.fromarray(all_grid)
+    #         im.save(os.path.join(save_dir,f"{model_name}_growth_avg.png"))
 
     def report(self, writer: SummaryWriter, p_x_given_z, loss, recon_loss, kl_loss):
         writer.add_scalar('loss', loss.item(), self.batch_idx)
@@ -332,11 +374,87 @@ class VAENCA(Model, nn.Module):
             z = self.encode(image.unsqueeze(0)).rsample((1,)).permute((1, 0, 2)).sg("Bnz")
 
             self.nca.n_duplications = int(np.log2(target_image_size)) - 1
-            decode, _ = self.decode(z)
+            decode, states = self.decode(z)
+
+            states_images = []
+            gif_images = []
+
+            for state in states:
+                state = state[:, :1, :, :]
+                h = state.shape[3]
+                pad = (target_image_size - h) // 2
+                state = t.nn.functional.pad(state, [pad] * 4, mode="constant", value=0)
+                states_images.append(state.reshape(1, target_image_size, target_image_size))
+                state = t.clip(state, 0, 1)
+                state_np = state.cpu().detach().numpy()
+                state_np = (state_np * 255).astype(np.uint8)
+                state_np = state_np.transpose(0, 2, 3, 1)  # (BHWC)
+                im = Image.fromarray(state_np[0].squeeze())
+                gif_images.append(im)
+
 
             output_image = decode.sample().reshape(1, target_image_size, target_image_size)  # Sample from the Bernoulli distribution
 
-        return output_image
+        return output_image, states_images, gif_images
+    
+    def generate_and_save_fractures(self, image_dir="../glass_fractures/test", index=0, save_dir="generated_fractures", target_image_size: int = 32, model_name="best"):
+        
+        image_files = [f for f in os.listdir(image_dir) if f.endswith(('.png', '.jpg', '.jpeg'))]
+        image_name = image_files[index].split('.')[0]
+
+        image_path = os.path.join(image_dir, image_files[index])
+
+        # Load the input image
+        image = Image.open(image_path).convert('L')  # Convert to grayscale
+
+        output_image = self.generate_fracture(image, target_image_size)[0]
+        states_images = self.generate_fracture(image, target_image_size)[1]
+        gif_images = self.generate_fracture(image, target_image_size)[2]
+
+        growth_images_path = os.path.join(save_dir, "growth")
+
+        # for i, state in enumerate(states_images):
+        #     state_image_path = os.path.join(growth_images_path, f"{model_name}_state_{i:03d}.png")
+        #     vutils.save_image(state, state_image_path)
+
+        for i, im in enumerate(gif_images):
+            gif_image_path = os.path.join(growth_images_path, f"size{target_image_size}_state_{i:03d}.png")
+            im.save(gif_image_path)
+
+        vutils.save_image(output_image, os.path.join(save_dir, f"{model_name}_gen_{image_name}_size{target_image_size}.png"))
+
+    def visualize_latent_space(self, dataloader, n_clusters=10):
+        # Extract latent representations
+        latent_representations = []
+    
+        self.eval()
+        ShapeGuard.reset()
+        with torch.no_grad():
+            for x,y in dataloader:  # Iterate over the static dataset
+                x = x.to(self.device)
+                loc = self.encode(x).mean  # Add batch dimension
+                z = loc  # Use the mean of the latent distribution
+                latent_representations.append(z.cpu().numpy())
+    
+        latent_representations = np.concatenate(latent_representations, axis=0)
+    
+        # Apply t-SNE
+        tsne = TSNE(n_components=2, random_state=42)
+        latent_tsne = tsne.fit_transform(latent_representations)
+
+        # Cluster the data
+        kmeans = KMeans(n_clusters=n_clusters, random_state=42)
+        cluster_labels = kmeans.fit_predict(latent_representations)
+    
+        # Visualize
+        plt.figure(figsize=(10, 8))
+        scatter = plt.scatter(latent_tsne[:, 0], latent_tsne[:, 1], c=cluster_labels, cmap='tab10', s=1)  # Use a single color for all points
+        # plt.scatter(latent_tsne[:, 0], latent_tsne[:, 1], s=1)  # Use a single color for all points
+        plt.colorbar(scatter)
+        plt.title('t-SNE of Latent Space')
+        plt.xlabel('t-SNE Component 1')
+        plt.ylabel('t-SNE Component 2')
+        plt.show()
 
 
 if __name__ == "__main__":
@@ -351,6 +469,7 @@ if __name__ == "__main__":
     parser.add_argument('--dataset', type=str, default='fractures', help='Glass fractures or MNIST dataset')
     parser.add_argument('--beta', type=float, default=1.0, help='Weight for the KL divergence term')
     parser.add_argument('--augment', type=bool, default=False, help='Augment dataset or not')
+    parser.add_argument('--checkpoint', type=str, default="latest", help='latest or best')
     args = parser.parse_args()
 
     model = VAENCA(ds=args.dataset, 
@@ -362,6 +481,14 @@ if __name__ == "__main__":
                    learning_rate=args.learning_rate,
                    beta=args.beta,
                    augment=args.augment)
+    
+
+    checkpoint_name = f"{args.checkpoint}_n5000_b{model.batch_size}_tb{model.test_batch_size}_z{model.z_size}_t{model.bin_threshold}_lr0.0005_beta{model.beta}_augFalse.pt"
+
+    # Load the saved model
+    checkpoint = torch.load(os.path.join("models", checkpoint_name))
+    model.load_state_dict(checkpoint["model_state_dict"])
+    model.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
     
     model.eval_batch()
     

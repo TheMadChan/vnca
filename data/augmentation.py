@@ -5,20 +5,17 @@ rotation_transforms = [
     transforms.RandomRotation((90, 90)),
     transforms.RandomRotation((180, 180)),
     transforms.RandomRotation((270, 270)),
+    transforms.RandomRotation((0, 0)),
 ]
 
 flip_transforms = [
     transforms.RandomHorizontalFlip(p=1.0),
-    transforms.RandomVerticalFlip(p=1.0),
+    # transforms.RandomVerticalFlip(p=1.0),
 ]
 
 def augment_dataset(dataset, rotation_transforms, flip_transforms):
     augmented_images = []
     for img, label in dataset:
-        # Apply flips to the original image
-        for flip in flip_transforms:
-            flipped_img = flip(img)
-            augmented_images.append((flipped_img, label))
         
         # Apply rotations to the original image
         for rotation in rotation_transforms:

@@ -22,15 +22,15 @@
 
 @REM python vae_nca.py --n_updates 5000 --batch_size 64
 @REM python generate_fractures.py --n_updates 5000 --batch_size 64
-python generate_fractures.py --n_updates 5000 --batch_size 64 --target_image_size 64
+@REM python generate_fractures.py --n_updates 5000 --batch_size 64 --target_image_size 64
 
 @REM python vae_nca.py --n_updates 5000 --batch_size 32
 @REM python generate_fractures.py --n_updates 5000 --batch_size 32
-python generate_fractures.py --n_updates 5000 --batch_size 32 --target_image_size 64
+@REM python generate_fractures.py --n_updates 5000 --batch_size 32 --target_image_size 64
 
 @REM python vae_nca.py --n_updates 5000 --batch_size 16
 @REM python generate_fractures.py --n_updates 5000 --batch_size 16
-python generate_fractures.py --n_updates 5000 --batch_size 16 --target_image_size 64
+@REM python generate_fractures.py --n_updates 5000 --batch_size 16 --target_image_size 64
 
 
 @REM -------------------- Fracture dataset (latent space size tuning) ---------------------------------------------------------------------
@@ -40,18 +40,18 @@ python generate_fractures.py --n_updates 5000 --batch_size 16 --target_image_siz
 
 @REM python vae_nca.py --n_updates 5000 --z_size 64
 @REM python generate_fractures.py --n_updates 5000 --z_size 64
-python generate_fractures.py --n_updates 5000 --z_size 64 --target_image_size 64
+@REM python generate_fractures.py --n_updates 5000 --z_size 64 --target_image_size 64
 
 @REM python vae_nca.py --n_updates 5000 --z_size 32
 @REM python generate_fractures.py --n_updates 5000 --z_size 32
-python generate_fractures.py --n_updates 5000 --z_size 32 --target_image_size 64
+@REM python generate_fractures.py --n_updates 5000 --z_size 32 --target_image_size 64
 
 
 @REM ----------------------- Fracture dataset (learning rate tuning) ---------------------------------------------------------------------
 
 @REM python vae_nca.py --n_updates 5000 --learning_rate 5e-4
 @REM python generate_fractures.py --n_updates 5000 --learning_rate 5e-4
-python generate_fractures.py --n_updates 5000 --learning_rate 5e-4 --target_image_size 64
+@REM python generate_fractures.py --n_updates 5000 --learning_rate 5e-4 --target_image_size 64
 
 @REM python vae_nca.py --n_updates 5000 --learning_rate 1e-4
 @REM python generate_fractures.py 
@@ -64,12 +64,17 @@ python generate_fractures.py --n_updates 5000 --learning_rate 5e-4 --target_imag
 
 @REM python vae_nca.py --n_updates 5000 --beta 1.5
 @REM python generate_fractures.py --n_updates 5000 --beta 1.5
-python generate_fractures.py --n_updates 5000 --beta 1.5 --target_image_size 64
+@REM python generate_fractures.py --n_updates 5000 --beta 1.5 --target_image_size 64
 
 @REM python vae_nca.py --n_updates 5000 --beta 2.0
 @REM python generate_fractures.py --n_updates 5000 --beta 2.0
-python generate_fractures.py --n_updates 5000 --beta 2.0 --target_image_size 64
+@REM python generate_fractures.py --n_updates 5000 --beta 2.0 --target_image_size 64
 
 
+@REM -------------- Fracture dataset (longer training with augmented dataset) ---------------------------------------------------------------------
+
+@REM python vae_nca.py --n_updates 20000 --learning_rate 1e-4 --augment True
+python generate_fractures.py --n_updates 20000 --learning_rate 1e-4 --augment True
+@REM python generate_fractures.py --n_updates 20000 --learning_rate 1e-4 --augment True --target_image_size 64
 
 @REM pause

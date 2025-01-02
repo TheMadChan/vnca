@@ -6,25 +6,11 @@ import os
 from PIL import Image
 from vae_nca import VAENCA
 
-def generate_and_save_fractures(model, image_dir="../glass_fractures/test", index=0, save_dir="generated_fractures", target_image_size: int = 32, model_name="best"):
-    os.makedirs(save_dir, exist_ok=True)
-    
-    image_files = [f for f in os.listdir(image_dir) if f.endswith(('.png', '.jpg', '.jpeg'))]
-    image_name = image_files[index].split('.')[0]
-
-    image_path = os.path.join(image_dir, image_files[index])
-
-    # Load the input image
-    image = Image.open(image_path).convert('L')  # Convert to grayscale
-
-    output_image = model.generate_fracture(image, target_image_size)
-    vutils.save_image(output_image, os.path.join(save_dir, f"{model_name}_gen_{image_name}_size{target_image_size}.png"))
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Generate fractures from VAE-NCA')
     parser.add_argument('--image_dir', type=str, default="../glass_fractures/test", help='Path to the input image')
     parser.add_argument('--checkpoint', type=str, default='latest', help='Checkpoint name to load the model from')
-    parser.add_argument('--save_dir', type=str, default='generated_fractures', help='Directory to save the generated samples')
     parser.add_argument('--target_image_size', type=int, default=32, help='Target size for the output image')
     parser.add_argument('--index', type=int, default=0, help='Index of the image to generate fractures from')
     
@@ -55,6 +41,17 @@ if __name__ == "__main__":
 
     # Load the saved model
     model.load(os.path.join("models", checkpoint_name))
+
+    # Create a directory to save the generated images
+    os.makedirs("generated_fractures", exist_ok=True)
+    out_images_dir = os.path.join("generated_fractures", checkpoint_name.split('.p')[0])
+    os.makedirs(out_images_dir, exist_ok=True)
+    growth_images_dir = os.path.join(out_images_dir, "growth")
+    os.makedirs(growth_images_dir, exist_ok=True)
     
     # Generate and save samples
-    generate_and_save_fractures(model, image_dir=args.image_dir, index=args.index, save_dir=args.save_dir, target_image_size=args.target_image_size, model_name=checkpoint_name.split('.p')[0])
+    model.generate_and_save_fractures(image_dir=args.image_dir, index=args.index, save_dir=out_images_dir, target_image_size=args.target_image_size, model_name=args.checkpoint)
+    # model._plot_samples()
+    model.visualize_latent_space(model.latent_loader)
+    
+    # model.plot_growth_sample_avg(image_dir=args.image_dir, index=args.index, save_dir=out_images_dir, model_name=args.checkpoint)
